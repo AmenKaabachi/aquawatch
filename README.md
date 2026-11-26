@@ -1,4 +1,4 @@
-# AquaWatch Grand Tunis — Sprint 1 : Socle du Projet
+# AquaWatch Grand Tunis — Sprint 2 : Surveillance de l'Approvisionnement & Détection d'Interruptions
 
 **AquaWatch Grand Tunis** est une application académique de simulation et de surveillance de l'approvisionnement en eau potable à travers les quatre gouvernorats du Grand Tunis.
 
@@ -6,19 +6,30 @@ Ce projet s'inscrit dans le cadre du cours **Systèmes Parallèles et Distribué
 
 ---
 
-## 1. Objectifs du Sprint 1
+## 1. Objectifs des Sprints
 
-Le Sprint 1 met en place le socle fonctionnel, architectural et persistant du projet sans introduire de complexité superflue (pas de microservices, d'ORM lourd ou de conteneurisation prématurée) :
-
+### Sprint 1 : Socle architectural et simulation
 - **Structure géographique** : 4 gouvernorats du Grand Tunis et 8 zones de surveillance hypothétiques (2 par gouvernorat).
 - **Capteurs virtuels** : 24 capteurs (pression, débit, combiné) rattachés aux zones de surveillance.
 - Chaque zone possède un capteur de pression, un capteur de débit et un capteur combiné, ce dernier représentant un seul appareil virtuel qui mesure les deux variables.
 - Les mesures non prises en charge par un capteur sont stockées en `NULL` (et affichées comme indisponibles), jamais comme zéro. Toutes les mesures sont simulées.
 - **Simulateur de mesures** : Générateur déterministe et réaliste de mesures de pression (bar) et de débit (m³/h).
-- **Statut de surveillance** : Indicateurs initiaux (`Normal`, `Données insuffisantes`, `Inactive`).
-- **Base de données relationnelle** : SQLite avec tables, clés étrangères activées, index et scripts SQL dédiés (`schema.sql`, `seed.sql`).
-- **Tableau de bord Streamlit** : Interface en français avec indicateurs clés, fiches gouvernorats/zones, visualisations graphiques Plotly et table filtrable avec déclenchement manuel de génération de mesures.
-- **Tests automatisés** : Suite complète avec `pytest` isolée sur base temporaire.
+- **Base de données relationnelle** : SQLite avec tables, clés étrangères activées, index et scripts SQL dédiés.
+- **Tableau de bord Streamlit initial** : Navigation et visualisation Plotly.
+
+### Sprint 2 : Surveillance fiable et détection des interruptions
+Le Sprint 2 enrichit le socle avec un moteur d'analyse et d'alertes déterministe :
+- **Surveillance au niveau zone** : Dérivation d'une mesure représentative par métrique avec politique de sélection stricte et repli automatique sur capteur combiné.
+- **Seuils paramétrables** : Pression basse (<= 1.5 bar) et Débit bas (<= 50.0 m³/h).
+- **Validation par lectures consécutives** : Exigence de 3 lectures anormales consécutives avant déclenchement d'alerte, évitant les fausses alertes sur anomalies passagères.
+- **Gestion rigoureuse de la qualité** : Traitement explicite des données manquantes, invalides (`quality_status != 'valid'`) et obsolètes (> 24h).
+- **Persistance et cycle de vie des alertes** : Nouvelles tables `alerts` et `monitoring_states` avec index, historique préservé et résolution automatique lors du retour à la normale.
+- **Tableau de bord enrichi** :
+  - Synthèse globale sur la page *Vue d'ensemble* (6 cartes KPI, table détaillée).
+  - Page dédiée *Alertes & Incidents* avec filtres multi-critères et injecteur de scénarios de test.
+  - Page *Gouvernorats et zones* affichant l'état temps-réel, les lectures représentatives et le statut de repli.
+  - Graphiques Plotly avec lignes de référence des seuils critiques.
+- **Suite de tests automatisée** : 92 tests validant l'intégrité, les repositories, les règles de détection et les 12 scénarios d'acceptation.
 
 ---
 
@@ -407,42 +418,115 @@ La base de données créée réside dans `data/aquawatch.db`. Vous pouvez l'insp
 python -c "import sqlite3; conn=sqlite3.connect('data/aquawatch.db'); print('Mesures en base :', conn.execute('SELECT COUNT(*) FROM measurements').fetchone()[0])"
 ```
 
-### Migration des mesures par type de capteur
+### Migration Sprint 2 : Alertes et état de surveillance
 
-Chaque zone possède un capteur de pression, un capteur de débit et un capteur combiné (un appareil virtuel qui mesure les deux). Les colonnes non mesurées sont stockées comme `NULL`, et non comme zéro. Après sauvegarde, la migration peut être lancée avec :
+Le Sprint 2 ajoute les tables `alerts` et `monitoring_states` sans altérer les 1 152 mesures ni les 24 capteurs existants :
 
 ```powershell
-python -m backend.database.migrate_sensor_measurements
+python -m backend.database.migrate_sprint2_alerts
 ```
 
-Le script crée et vérifie une sauvegarde horodatée avant d'effectuer une migration transactionnelle. Les plages de simulation configurées sont illustratives et ne sont pas des seuils officiels de la SONEDE.
+Le script crée une sauvegarde horodatée validée par `PRAGMA integrity_check` avant d'appliquer le schéma de façon transactionnelle et idempotente.
 
 ---
 
-## 8. Scénario de démonstration (Sprint 1)
+## 8. Détails d'implémentation du Sprint 2
 
-1. **Initialiser la base** : `python -m backend.database.init_db`
-2. **Lancer le dashboard** : `streamlit run app.py`
-3. **🏠 Vue d'ensemble** :
-   - Constater les 4 gouvernorats, 8 zones, 24 capteurs et l'avertissement de simulation.
-   - Constater que les zones sont initialement à l'état `Données insuffisantes`.
-4. **🗺️ Gouvernorats et zones** :
-   - Consulter la hiérarchie des 4 gouvernorats et déployer les fiches des zones pour voir le détail des capteurs.
-5. **📋 Données** :
-   - Cliquer sur le bouton **🔄 Générer** pour simuler un premier lot de mesures.
-   - Constater l'apparition des mesures dans la table et tester les filtres par gouvernorat, zone et capteur.
-6. **📊 Surveillance des capteurs** :
-   - Sélectionner un capteur et observer les graphiques Plotly retraçant l'historique de pression et de débit.
-7. **Retour à la Vue d'ensemble** :
-   - Constater que le statut des zones est désormais passé à `🟢 Normal` suite à l'acquisition des données simulées.
-8. **Persistance** :
-   - Actualiser le navigateur : toutes les données générées restent stockées dans SQLite.
+### 8.1 Surveillance au niveau zone & Politique de repli
+Chaque zone dispose de 3 capteurs virtuels : un capteur dédié de pression, un capteur dédié de débit, et un capteur combiné.
+- **Pression** : La surveillance privilégie la dernière mesure valide du capteur dédié. Si celui-ci est défaillant, absent, invalide ou obsolète (> 24h), le système bascule automatiquement sur la mesure de pression du capteur combiné en repli.
+- **Débit** : Règle symétrique privilégiant le capteur dédié de débit avec repli automatique sur le capteur combiné.
+- Les capteurs ne sont **jamais moyennés** et le capteur combiné n'est **jamais doublement comptabilisé**.
+
+### 8.2 Seuils de détection configurables
+Centralisés dans `backend/config.py` :
+- **Pression basse** : `pressure_bar <= 1.5` bar
+- **Débit bas** : `flow_m3_h <= 50.0` m³/h
+- **Condition A (Pression faible)** : Pression <= 1.5 bar sur 3 lectures consécutives (`WARNING`).
+- **Condition B (Débit faible)** : Débit <= 50.0 m³/h sur 3 lectures consécutives (`WARNING`).
+- **Condition C (Interruption possible)** : Pression et débit anormalement bas simultanément sur 3 lectures consécutives (`CRITICAL`).
+
+### 8.3 Validation par 3 lectures consécutives & Idempotence
+- Une seule anomalie isolée ne déclenche **aucune alerte**.
+- 3 lectures distinctes consécutives anormales sont requises.
+- Une lecture normale réinitialise immédiatement le compteur à 0 (règle de rétablissement).
+- Le suivi est basé sur les identifiants uniques de mesure (`last_processed_measurement_id`) stockés dans `monitoring_states`. Exécuter plusieurs fois la surveillance contre les mêmes données est **strictement idempotent**.
+
+### 8.4 Qualité des données & Fraîcheur
+- **Données manquantes** : Aucune mesure n'est jamais interprétée comme 0. Statut affiché : `Données insuffisantes`.
+- **Données invalides** : Tout relevé avec `quality_status != 'valid'` est ignoré par l'analyse et n'incrémente pas les compteurs anormaux.
+- **Données obsolètes** : Tout relevé de plus de 24h est marqué `Données anciennes` et ne génère aucune fausse alerte.
+
+### 8.5 Cycle de vie et persistance des alertes
+- Les alertes sont créées dans la table `alerts` avec les statuts `ACTIVE` et `RESOLVED`.
+- Lorsque pression et débit sont tous deux anormaux, une alerte `POSSIBLE_INTERRUPTION` (`CRITICAL`) est créée et résout les alertes individuelles pour éviter les doublons contradictoires.
+- Lors du retour à la normale, l'alerte active est résolue (`status = 'RESOLVED'`, `resolved_at = horodatage`) et conservée dans l'historique sans écrasement.
 
 ---
 
-## 9. Limites connues et périmètre du Sprint 1
+## 9. Scénario de démonstration du Sprint 2
 
-Conformément au cahier des charges de la phase 1 :
-- **Pas d'alertes temps-réel ni de détection automatique d'interruption** : ces règles seront introduites au Sprint 2.
-- **Pas de parallélisme / concurrence (multiprocessing, multithreading, asyncio)** : l'architecture a été conçue pour brancher ces modules ultérieurement sans modifier l'interface.
-- **Capteurs virtuels** : aucun matériel physique n'est raccordé.
+1. **Lancer le dashboard Streamlit** :
+   ```powershell
+   streamlit run app.py
+   # ou via python si streamlit n'est pas dans le PATH :
+   python -m streamlit run app.py
+   ```
+2. **🏠 Vue d'ensemble** :
+   - Observer les 6 indicateurs de synthèse (Total zones, Normales, Données insuffisantes, Avertissements, Interruptions, Alertes actives).
+   - Les états sont lus depuis les dernières mesures traitées automatiquement; le dashboard ne déclenche plus de nouvelle évaluation.
+3. **🗺️ Gouvernorats et zones** :
+   - Déplier les zones pour consulter les métriques représentatives en bar et m³/h, le statut individuel, et l'indicateur de repli sur capteur combiné.
+4. **🚨 Alertes & Incidents** :
+   - Visualiser les alertes actives et l'historique résolu avec filtres par gouvernorat, zone, statut et sévérité.
+   - Ouvrir la section dépliante **🧪 Démonstration de scénarios d'anomalies (SIMULATION)** :
+     - Sélectionner une zone cible (ex: `TUN-Z1`).
+     - Choisir le scénario : `🔴 Interruption possible` ou `🟠 Pression faible seule`.
+     - Cliquer sur **⚡ Injecter le scénario** : 3 mesures anormales simulées sont créées et traitées automatiquement par la couche de persistance.
+     - Constater l'apparition de l'alerte critique ou d'avertissement.
+     - Sélectionner ensuite le scénario `🟢 Rétablissement normal` et cliquer sur **⚡ Injecter le scénario** : constater la résolution automatique de l'alerte et son transfert dans l'historique des incidents résolus.
+5. **📊 Surveillance des capteurs** :
+   - Observer les lignes de seuil horizontales en pointillés rouges (1.5 bar) et orange (50 m³/h) sur les graphiques Plotly.
+
+---
+
+## 10. Limites connues et périmètre du Sprint 2
+
+Conformément au cahier des charges :
+- **Prototype académique** : toutes les mesures sont simulées (`data_origin = 'SIMULATED'`).
+- **Aucune intégration physique SONEDE**.
+
+---
+
+## 11. Sprint 3 — Collecte asynchrone avec asyncio
+
+Sprint 3 ajoute une démonstration académique de concurrence asynchrone avec le module
+[`async_sensor_service.py`](backend/services/async_sensor_service.py) :
+
+- `collect_sequential()` attend la latence simulée pour chaque capteur avant de passer au suivant.
+- `collect_async()` crée une tâche pour chaque capteur et les attend avec `asyncio.gather()`.
+- Les tâches utilisent `asyncio.sleep()` pour représenter une latence réseau simulée.
+- Les résultats sont retournés une fois, puis sauvegardés par `measurement_repository.insert_many()`.
+- La sauvegarde déclenche automatiquement le traitement Sprint 2 via le mécanisme existant.
+
+Le benchmark est disponible dans [`benchmark_service.py`](backend/services/benchmark_service.py).
+Il utilise `time.perf_counter()` et calcule le speedup par
+`temps séquentiel / temps asyncio`. Les résultats utilisent la médiane de plusieurs
+répétitions. Le benchmark ne modifie pas la base de données.
+
+Commande Python de démonstration avec les capteurs actifs :
+
+```powershell
+python -c "from backend.database.connection import get_connection; from backend.repositories import sensor_repository; from backend.services.benchmark_service import run_benchmark; c=get_connection(); s=sensor_repository.get_active(c); print(run_benchmark([{'sensors':s[:n]} for n in (4,8,16,24)], 0.05, 3, 42)); c.close()"
+```
+
+Dans le tableau de bord, la page **⚡ Collecte asynchrone** permet de choisir le nombre
+de capteurs, la latence simulée et le nombre de répétitions. Les collectes séquentielle
+et asynchrone peuvent être exécutées séparément, mais seule la collecte applicative
+explicitement lancée depuis ce mode persiste les mesures.
+
+**Concurrence** : plusieurs tâches progressent pendant des périodes qui se chevauchent.
+**Asynchronisme** : `asyncio` suspend les tâches pendant l'attente simulée et réactive
+d'autres tâches sur la boucle d'événements. **Parallélisme** : plusieurs opérations CPU
+s'exécutent simultanément. Sprint 3 démontre la concurrence asynchrone, pas le parallélisme
+CPU ni des communications avec des capteurs réels.

@@ -116,6 +116,14 @@ def render_sensors(conn: sqlite3.Connection) -> None:
             title="Pression (bar)",
             labels={"timestamp": "Horodatage", "pressure_bar": "Pression (bar)"},
         )
+        # Seuil d'anomalie de basse pression (1.5 bar)
+        fig_pressure.add_hline(
+            y=1.5,
+            line_dash="dash",
+            line_color="red",
+            annotation_text="Seuil pression basse (1.5 bar)",
+            annotation_position="bottom right",
+        )
         fig_pressure.update_layout(
             xaxis_title="Horodatage",
             yaxis_title="Pression (bar)",
@@ -134,6 +142,14 @@ def render_sensors(conn: sqlite3.Connection) -> None:
             y="flow_m3_h",
             title="Débit (m³/h)",
             labels={"timestamp": "Horodatage", "flow_m3_h": "Débit (m³/h)"},
+        )
+        # Seuil d'anomalie de faible débit (50 m³/h)
+        fig_flow.add_hline(
+            y=50.0,
+            line_dash="dash",
+            line_color="orange",
+            annotation_text="Seuil débit bas (50 m³/h)",
+            annotation_position="bottom right",
         )
         fig_flow.update_layout(
             xaxis_title="Horodatage",

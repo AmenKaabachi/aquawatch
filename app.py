@@ -13,7 +13,7 @@ import streamlit as st
 from backend.config import DATABASE_PATH
 from backend.database.connection import get_connection
 from backend.database.init_db import init_database
-from dashboard import measurements, overview, zones
+from dashboard import alerts, async_collection, measurements, overview, zones
 
 
 # ── Configuration de la page ─────────────────────────────────
@@ -40,7 +40,7 @@ conn = get_connection()
 
 # ── Barre latérale ───────────────────────────────────────────
 st.sidebar.title("💧 AquaWatch")
-st.sidebar.caption("Grand Tunis — Sprint 1")
+st.sidebar.caption("Grand Tunis — Sprint 3 : Collecte asynchrone")
 st.sidebar.markdown("---")
 
 page = st.sidebar.radio(
@@ -48,8 +48,10 @@ page = st.sidebar.radio(
     options=[
         "🏠 Vue d'ensemble",
         "🗺️ Gouvernorats et zones",
+        "🚨 Alertes & Incidents",
         "📊 Surveillance des capteurs",
         "📋 Données",
+        "⚡ Collecte asynchrone",
     ],
     label_visibility="collapsed",
 )
@@ -67,10 +69,14 @@ if page == "🏠 Vue d'ensemble":
     overview.render(conn)
 elif page == "🗺️ Gouvernorats et zones":
     zones.render(conn)
+elif page == "🚨 Alertes & Incidents":
+    alerts.render(conn)
 elif page == "📊 Surveillance des capteurs":
     measurements.render_sensors(conn)
 elif page == "📋 Données":
     measurements.render_data(conn)
+elif page == "⚡ Collecte asynchrone":
+    async_collection.render(conn)
 
 # ── Fermeture de la connexion ────────────────────────────────
 conn.close()

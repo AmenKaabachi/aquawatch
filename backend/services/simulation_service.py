@@ -14,7 +14,7 @@ Le simulateur produit des valeurs réalistes avec :
 import math
 import random
 import sqlite3
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import List, Optional
 
 from backend.config import (
@@ -53,7 +53,7 @@ def generate_measurements(
     if not sensors:
         return []
 
-    now = utc_now()
+    now = utc_now().replace(minute=0, second=0, microsecond=0)
     base_time = now - timedelta(hours=count_per_sensor)
     all_measurements: List[dict] = []
 
@@ -127,6 +127,51 @@ def _generate_sensor_measurements(
     return measurements
 
 
+def generate_sensor_measurement(
+    sensor: dict,
+    timestamp,
+    rng: random.Random,
+) -> dict:
+    """Génère une unique mesure selon le type du capteur.
+
+    Cette fonction réutilise les fonctions de simulation de pression et de débit
+    existantes afin que la collection séquentielle et asyncio produisent les
+    mêmes types de valeurs.
+    """
+    sensor_type = sensor["sensor_type"]
+    base_pressure = (
+        3.5 + rng.uniform(-0.5, 0.5)
+        if sensor_type in ("pressure", "combined")
+        else None
+    )
+    base_flow = (
+        200.0 + rng.uniform(-30.0, 30.0)
+        if sensor_type in ("flow", "combined")
+        else None
+    )
+
+    hour = timestamp.hour
+    pressure = (
+        round(_simulate_pressure(base_pressure, hour, rng), 2)
+        if base_pressure is not None
+        else None
+    )
+    flow = (
+        round(_simulate_flow(base_flow, hour, rng), 2)
+        if base_flow is not None
+        else None
+    )
+
+    return {
+        "sensor_id": sensor["id"],
+        "timestamp": format_iso(timestamp),
+        "pressure_bar": pressure,
+        "flow_m3_h": flow,
+        "quality_status": "valid",
+        "data_origin": DATA_ORIGIN_SIMULATED,
+    }
+
+
 def _simulate_pressure(base: float, hour: int, rng: random.Random) -> float:
     """Simule une valeur de pression réaliste.
 
@@ -173,3 +218,74 @@ def _simulate_flow(base: float, hour: int, rng: random.Random) -> float:
     noise = rng.gauss(0, 20)
     flow = base * hour_factor + noise
     return max(SIMULATION_FLOW_MIN, min(SIMULATION_FLOW_MAX, flow))
+
+
+def generate_abnormal_measurements(
+    conn: sqlite3.Connection,
+    zone_id: int,
+    condition: str = "interruption",
+    count: int = 3,
+    base_time: Optional[datetime] = None,
+    save: bool = True,
+) -> List[dict]:
+    """Génère des mesures anormales contrôlées pour une zone (Sprint 2).
+
+    Permet de tester et de démontrer la détection des coupures et alertes.
+    Toutes les mesures sont marquées explicitement data_origin = 'SIMULATED'.
+
+    Args:
+        conn: Connexion SQLite.
+        zone_id: Identifiant de la zone cible.
+        condition: 'interruption', 'low_pressure', 'low_flow' ou 'normal'.
+        count: Nombre de mesures consécutives à générer.
+        base_time: Horodatage de début (utc_now() par défaut).
+        save: Si True, enregistre en base.
+
+    Returns:
+        Liste des mesures générées.
+    """
+    sensors = sensor_repository.get_by_zone(conn, zone_id)
+    if not sensors:
+        return []
+
+    now = base_time or utc_now()
+    # On espace les mesures de 10 minutes pour former une séquence temporelle
+    all_measurements: List[dict] = []
+
+    for i in range(count):
+        ts = now + timedelta(minutes=10 * i)
+        ts_iso = format_iso(ts)
+
+        for sensor in sensors:
+            stype = sensor["sensor_type"]
+            p_val = None
+            f_val = None
+
+            if stype in ("pressure", "combined"):
+                if condition in ("low_pressure", "interruption"):
+                    p_val = round(1.0 + (i * 0.1), 2)  # 1.0, 1.1, 1.2 <= 1.5 bar
+                else:
+                    p_val = round(3.2 + (i * 0.1), 2)  # normal > 1.5 bar
+
+            if stype in ("flow", "combined"):
+                if condition in ("low_flow", "interruption"):
+                    f_val = round(25.0 + (i * 5.0), 2)  # 25, 30, 35 <= 50.0 m³/h
+                else:
+                    f_val = round(180.0 + (i * 5.0), 2)  # normal > 50.0 m³/h
+
+            all_measurements.append(
+                {
+                    "sensor_id": sensor["id"],
+                    "timestamp": ts_iso,
+                    "pressure_bar": p_val,
+                    "flow_m3_h": f_val,
+                    "quality_status": "valid",
+                    "data_origin": DATA_ORIGIN_SIMULATED,
+                }
+            )
+
+    if save and all_measurements:
+        measurement_repository.insert_many(conn, all_measurements)
+
+    return all_measurements
+

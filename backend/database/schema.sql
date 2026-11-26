@@ -112,3 +112,46 @@ CREATE INDEX IF NOT EXISTS idx_sensors_zone_id
 
 CREATE INDEX IF NOT EXISTS idx_zones_governorate_id
     ON monitoring_zones (governorate_id);
+
+-- ============================================================
+-- Sprint 2 : Alertes et état de surveillance
+-- ============================================================
+
+-- Table des alertes de surveillance
+CREATE TABLE IF NOT EXISTS alerts (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    zone_id         INTEGER NOT NULL,
+    alert_type      TEXT    NOT NULL CHECK (alert_type IN ('LOW_PRESSURE', 'LOW_FLOW', 'POSSIBLE_INTERRUPTION')),
+    severity        TEXT    NOT NULL CHECK (severity IN ('WARNING', 'CRITICAL')),
+    status          TEXT    NOT NULL DEFAULT 'ACTIVE' CHECK (status IN ('ACTIVE', 'RESOLVED')),
+    message         TEXT    NOT NULL,
+    started_at      TEXT    NOT NULL,
+    last_detected_at TEXT   NOT NULL,
+    resolved_at     TEXT,
+    created_at      TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    FOREIGN KEY (zone_id) REFERENCES monitoring_zones (id)
+);
+
+-- Table de suivi de l'état de surveillance par zone (validation des lectures consécutives)
+CREATE TABLE IF NOT EXISTS monitoring_states (
+    zone_id                                 INTEGER PRIMARY KEY,
+    last_processed_pressure_measurement_id  INTEGER,
+    last_processed_flow_measurement_id      INTEGER,
+    consecutive_low_pressure_count          INTEGER NOT NULL DEFAULT 0,
+    consecutive_low_flow_count              INTEGER NOT NULL DEFAULT 0,
+    last_evaluated_at                       TEXT NOT NULL,
+    FOREIGN KEY (zone_id) REFERENCES monitoring_zones (id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_alerts_zone_id
+    ON alerts (zone_id);
+
+CREATE INDEX IF NOT EXISTS idx_alerts_status
+    ON alerts (status);
+
+CREATE INDEX IF NOT EXISTS idx_alerts_alert_type
+    ON alerts (alert_type);
+
+CREATE INDEX IF NOT EXISTS idx_alerts_started_at
+    ON alerts (started_at);
+

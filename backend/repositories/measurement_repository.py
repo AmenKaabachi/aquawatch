@@ -6,6 +6,7 @@ avec filtrage par gouvernorat, zone et capteur.
 
 import sqlite3
 from typing import List, Optional
+from backend.utils.time_utils import parse_iso
 
 _BASE_QUERY = """
     SELECT m.*, s.name AS sensor_name, s.sensor_type,
@@ -30,19 +31,59 @@ def insert_many(conn: sqlite3.Connection, measurements: List[dict]) -> int:
     Returns:
         Nombre de mesures insérées.
     """
-    conn.executemany(
-        """
-        INSERT INTO measurements
-            (sensor_id, timestamp, pressure_bar, flow_m3_h,
-             quality_status, data_origin)
-        VALUES
-            (:sensor_id, :timestamp, :pressure_bar, :flow_m3_h,
-             :quality_status, :data_origin)
-        """,
-        measurements,
-    )
-    conn.commit()
-    return len(measurements)
+    inserted_ids: List[int] = []
+    zone_ids = set()
+    zone_reference_times = {}
+
+    try:
+        for measurement in measurements:
+            cursor = conn.execute(
+                """
+                INSERT INTO measurements
+                    (sensor_id, timestamp, pressure_bar, flow_m3_h,
+                     quality_status, data_origin)
+                VALUES
+                    (:sensor_id, :timestamp, :pressure_bar, :flow_m3_h,
+                     :quality_status, :data_origin)
+                """,
+                measurement,
+            )
+            inserted_ids.append(cursor.lastrowid)
+
+            sensor = conn.execute(
+                "SELECT zone_id FROM sensors WHERE id = ?",
+                (measurement["sensor_id"],),
+            ).fetchone()
+            if sensor:
+                zone_ids.add(sensor["zone_id"])
+                timestamp = parse_iso(measurement["timestamp"])
+                previous = zone_reference_times.get(sensor["zone_id"])
+                if previous is None or timestamp > previous:
+                    zone_reference_times[sensor["zone_id"]] = timestamp
+
+        if inserted_ids:
+            # Import lazily to keep repositories independent and avoid cycles.
+            from backend.services import monitoring_service
+
+            for zone_id in zone_ids:
+                monitoring_service.evaluate_zone(
+                    conn,
+                    zone_id,
+                    reference_time=zone_reference_times[zone_id],
+                    commit=False,
+                    process_new=True,
+                )
+
+        conn.commit()
+        return len(inserted_ids)
+    except BaseException:
+        conn.rollback()
+        raise
+
+
+def insert_one(conn: sqlite3.Connection, measurement: dict) -> int:
+    """Insère une mesure puis déclenche automatiquement sa zone de surveillance."""
+    return insert_many(conn, [measurement])
 
 
 def get_recent(conn: sqlite3.Connection, limit: int = 100) -> List[dict]:
@@ -101,6 +142,25 @@ def get_latest_by_sensor(
         FROM measurements m
         JOIN sensors s ON m.sensor_id = s.id
         WHERE m.sensor_id = ?
+        ORDER BY m.timestamp DESC
+        LIMIT 1
+        """,
+        (sensor_id,),
+    )
+    row = cursor.fetchone()
+    return dict(row) if row else None
+
+
+def get_latest_valid_by_sensor(
+    conn: sqlite3.Connection, sensor_id: int
+) -> Optional[dict]:
+    """Récupère la mesure valide la plus récente d'un capteur (Sprint 2)."""
+    cursor = conn.execute(
+        """
+        SELECT m.*, s.name AS sensor_name, s.sensor_type
+        FROM measurements m
+        JOIN sensors s ON m.sensor_id = s.id
+        WHERE m.sensor_id = ? AND m.quality_status = 'valid'
         ORDER BY m.timestamp DESC
         LIMIT 1
         """,
