@@ -7,6 +7,11 @@ import time
 from typing import Iterable, List, Optional, Set
 
 from backend.services.async_sensor_service import collect_async, collect_sequential
+from backend.services.multiprocessing_service import (
+    MAX_PROCESSES,
+    analyze_zone,
+    analyze_zones,
+)
 from backend.services.threaded_sensor_service import MAX_WORKERS, collect_threaded
 from backend.utils.time_utils import utc_now
 
@@ -224,3 +229,64 @@ def run_benchmark(
             failure_sensor_ids,
         )
     )
+
+
+def benchmark_multiprocessing(
+    zones: Iterable[dict],
+    iterations: int = 100_000,
+    process_counts: Optional[List[int]] = None,
+) -> dict:
+    """Compare sequential zone analysis with several process-pool sizes."""
+    zone_list = list(zones)
+    if not zone_list:
+        raise ValueError("Au moins une zone est requise pour le benchmark.")
+
+    selected_process_counts = (
+        process_counts if process_counts is not None else [1, 2, 4]
+    )
+    if not selected_process_counts:
+        raise ValueError("Au moins une configuration de processus est requise.")
+    for process_count in selected_process_counts:
+        if (
+            isinstance(process_count, bool)
+            or not isinstance(process_count, int)
+            or not 1 <= process_count <= MAX_PROCESSES
+        ):
+            raise ValueError(
+                f"Chaque configuration doit être entre 1 et {MAX_PROCESSES}."
+            )
+
+    started = time.perf_counter()
+    sequential_results = [
+        analyze_zone(zone, iterations) for zone in zone_list
+    ]
+    sequential_time = time.perf_counter() - started
+
+    comparisons = []
+    for process_count in selected_process_counts:
+        started = time.perf_counter()
+        process_results = analyze_zones(
+            zone_list,
+            iterations=iterations,
+            max_workers=process_count,
+        )
+        execution_time = time.perf_counter() - started
+        comparisons.append(
+            {
+                "process_count": process_count,
+                "execution_time": execution_time,
+                "speedup": _comparison_metrics(
+                    sequential_time,
+                    execution_time,
+                )["speedup"],
+                "results": process_results,
+            }
+        )
+
+    return {
+        "zone_count": len(zone_list),
+        "iterations": iterations,
+        "sequential_time": sequential_time,
+        "sequential_results": sequential_results,
+        "comparisons": comparisons,
+    }

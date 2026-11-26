@@ -8,10 +8,15 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-from backend.repositories import measurement_repository, sensor_repository
+from backend.repositories import (
+    measurement_repository,
+    sensor_repository,
+    zone_repository,
+)
 from backend.services import (
     async_sensor_service,
     benchmark_service,
+    multiprocessing_service,
     threaded_sensor_service,
 )
 
@@ -291,7 +296,115 @@ def render(conn: sqlite3.Connection) -> None:
         En CPython standard, le **GIL** empêche généralement plusieurs threads
         d'exécuter du bytecode Python simultanément. Les threads conviennent
         donc surtout aux attentes d'entrées-sorties, pas au calcul Python
-        intensif. Le multiprocessing, qui sera étudié ultérieurement, n'est pas
-        utilisé ici.
+        intensif. L'analyse CPU ci-dessous illustre le multiprocessing pour
+        comparer les pertes d'eau entre zones.
         """
     )
+
+    st.subheader("Analyse CPU des pertes d'eau par zone")
+    st.caption(
+        "Cette démonstration utilise des débits synthétiques déterministes "
+        "et ne modifie pas la base de données."
+    )
+    zones = zone_repository.get_all(conn)
+    if not zones:
+        st.info("Aucune zone disponible pour l'analyse.")
+        return
+
+    zone_workloads = [
+        {
+            "id": zone["id"],
+            "name": zone["name"],
+            "inflow_m3_h": 1000 + zone["id"] * 50,
+            "delivered_m3_h": 920 + zone["id"] * 45,
+        }
+        for zone in zones
+    ]
+    analysis_mode = st.segmented_control(
+        "Mode d'analyse",
+        options=["Séquentiel", "Multiprocessing"],
+        default="Multiprocessing",
+        key="sprint5_analysis_mode",
+    )
+    iterations = st.slider(
+        "Calculs par zone",
+        min_value=1000,
+        max_value=100000,
+        value=20000,
+        step=1000,
+        key="sprint5_iterations",
+    )
+    process_count = 2
+    if analysis_mode == "Multiprocessing":
+        process_count = st.select_slider(
+            "Nombre de processus",
+            options=[1, 2, 4],
+            value=2,
+            key="sprint5_process_count",
+        )
+
+    if st.button("Exécuter l'analyse CPU", key="sprint5_run_analysis"):
+        started = time.perf_counter()
+        if analysis_mode == "Séquentiel":
+            analysis_results = multiprocessing_service.analyze_zones_sequential(
+                zone_workloads,
+                iterations=iterations,
+            )
+        else:
+            analysis_results = multiprocessing_service.analyze_zones(
+                zone_workloads,
+                iterations=iterations,
+                max_workers=process_count,
+            )
+        st.session_state["sprint5_analysis_result"] = {
+            "mode": analysis_mode,
+            "process_count": process_count,
+            "execution_time": time.perf_counter() - started,
+            "results": analysis_results,
+        }
+
+    analysis_result = st.session_state.get("sprint5_analysis_result")
+    if analysis_result:
+        process_details = (
+            f" ({analysis_result['process_count']} processus)"
+            if analysis_result["mode"] == "Multiprocessing"
+            else ""
+        )
+        st.caption(
+            f"{analysis_result['mode']}{process_details} — "
+            f"{analysis_result['execution_time']:.4f} s"
+        )
+        st.dataframe(
+            pd.DataFrame(analysis_result["results"]),
+            hide_index=True,
+        )
+
+    if st.button("Comparer séquentiel et multiprocessing", key="sprint5_benchmark"):
+        with st.spinner("Benchmark CPU en cours..."):
+            benchmark = benchmark_service.benchmark_multiprocessing(
+                zone_workloads,
+                iterations=iterations,
+                process_counts=[1, 2, 4],
+            )
+        st.session_state["sprint5_benchmark_result"] = benchmark
+
+    benchmark = st.session_state.get("sprint5_benchmark_result")
+    if benchmark:
+        st.dataframe(
+            pd.DataFrame(
+                [
+                    {
+                        "Processus": row["process_count"],
+                        "Séquentiel (s)": benchmark["sequential_time"],
+                        "Multiprocessing (s)": row["execution_time"],
+                        "Speedup": row["speedup"],
+                    }
+                    for row in benchmark["comparisons"]
+                ]
+            ),
+            hide_index=True,
+        )
+        st.caption(
+            "Le démarrage des processus et le transfert des données ont un coût; "
+            "le multiprocessing n'est donc pas toujours plus rapide."
+        )

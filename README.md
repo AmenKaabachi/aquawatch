@@ -610,3 +610,19 @@ sans écriture en base. Les tests Sprint 4 se lancent avec :
 ```powershell
 python -m pytest -q
 ```
+
+## 13. Sprint 5 — Multiprocessing pour l'analyse CPU
+
+Le multiprocessing exécute des calculs dans plusieurs processus, chacun avec
+son propre interpréteur Python. Il est utile pour paralléliser des tâches
+intensives en calcul, contrairement aux threads qui restent limités par le GIL
+pour le bytecode Python. AquaWatch estime de façon déterministe les pertes
+d'eau de zones de démonstration, puis compare le résultat séquentiel aux pools
+de 1, 2 et 4 processus. Le lancement et le transfert des données ont un coût :
+un pool de processus n'est pas toujours plus rapide.
+
+Lancez `streamlit run app.py`, ouvrez **Collecte asynchrone**, puis choisissez
+**Multiprocessing** dans la section d'analyse CPU. Le bouton de comparaison
+mesure le séquentiel et les trois tailles de pool. Pour exécuter les tests Sprint
+5 : `python -m pytest -q tests/test_sprint5_multiprocessing.py`; la suite
+complète se lance avec `python -m pytest -q`.
