@@ -7,6 +7,7 @@ import time
 from typing import Iterable, List, Optional, Set
 
 from backend.services.async_sensor_service import collect_async, collect_sequential
+from backend.services.dask_analysis_service import analyze_zones_dask
 from backend.services.multiprocessing_service import (
     MAX_PROCESSES,
     analyze_zone,
@@ -31,10 +32,19 @@ def _validate_benchmark(response_delay: float, repetitions: int) -> None:
 
 
 def _comparison_metrics(sequential_time: float, parallel_time: float) -> dict:
-    if sequential_time <= 0 or parallel_time < 0:
+    if (
+        isinstance(sequential_time, bool)
+        or not isinstance(sequential_time, (int, float))
+        or not math.isfinite(sequential_time)
+        or isinstance(parallel_time, bool)
+        or not isinstance(parallel_time, (int, float))
+        or not math.isfinite(parallel_time)
+        or sequential_time <= 0
+        or parallel_time < 0
+    ):
         return {
             "speedup": None,
-            "time_saved": sequential_time - parallel_time,
+            "time_saved": None,
             "improvement_percent": None,
         }
     return {
@@ -231,12 +241,31 @@ def run_benchmark(
     )
 
 
-def benchmark_multiprocessing(
+def _validate_cpu_worker_counts(
+    worker_counts: List[int],
+    label: str,
+) -> None:
+    if not worker_counts:
+        raise ValueError(f"Au moins une configuration de {label} est requise.")
+    for worker_count in worker_counts:
+        if (
+            isinstance(worker_count, bool)
+            or not isinstance(worker_count, int)
+            or not 1 <= worker_count <= MAX_PROCESSES
+        ):
+            raise ValueError(
+                f"Chaque configuration de {label} doit être entre "
+                f"1 et {MAX_PROCESSES}."
+            )
+
+
+def benchmark_cpu_analysis(
     zones: Iterable[dict],
     iterations: int = 100_000,
     process_counts: Optional[List[int]] = None,
+    dask_worker_counts: Optional[List[int]] = None,
 ) -> dict:
-    """Compare sequential zone analysis with several process-pool sizes."""
+    """Compare sequential, multiprocessing, and Dask zone analysis."""
     zone_list = list(zones)
     if not zone_list:
         raise ValueError("Au moins une zone est requise pour le benchmark.")
@@ -244,17 +273,15 @@ def benchmark_multiprocessing(
     selected_process_counts = (
         process_counts if process_counts is not None else [1, 2, 4]
     )
-    if not selected_process_counts:
-        raise ValueError("Au moins une configuration de processus est requise.")
-    for process_count in selected_process_counts:
-        if (
-            isinstance(process_count, bool)
-            or not isinstance(process_count, int)
-            or not 1 <= process_count <= MAX_PROCESSES
-        ):
-            raise ValueError(
-                f"Chaque configuration doit être entre 1 et {MAX_PROCESSES}."
-            )
+    selected_dask_worker_counts = (
+        dask_worker_counts if dask_worker_counts is not None else [1, 2, 4]
+    )
+    if not selected_process_counts and not selected_dask_worker_counts:
+        raise ValueError("Au moins une configuration parallèle est requise.")
+    if selected_process_counts:
+        _validate_cpu_worker_counts(selected_process_counts, "processus")
+    if selected_dask_worker_counts:
+        _validate_cpu_worker_counts(selected_dask_worker_counts, "workers Dask")
 
     started = time.perf_counter()
     sequential_results = [
@@ -273,13 +300,34 @@ def benchmark_multiprocessing(
         execution_time = time.perf_counter() - started
         comparisons.append(
             {
-                "process_count": process_count,
+                "strategy": "Multiprocessing",
+                "worker_count": process_count,
                 "execution_time": execution_time,
                 "speedup": _comparison_metrics(
                     sequential_time,
                     execution_time,
                 )["speedup"],
                 "results": process_results,
+            }
+        )
+    for worker_count in selected_dask_worker_counts:
+        started = time.perf_counter()
+        dask_results = analyze_zones_dask(
+            zone_list,
+            iterations=iterations,
+            n_workers=worker_count,
+        )
+        execution_time = time.perf_counter() - started
+        comparisons.append(
+            {
+                "strategy": "Dask Distributed",
+                "worker_count": worker_count,
+                "execution_time": execution_time,
+                "speedup": _comparison_metrics(
+                    sequential_time,
+                    execution_time,
+                )["speedup"],
+                "results": dask_results,
             }
         )
 
@@ -289,4 +337,33 @@ def benchmark_multiprocessing(
         "sequential_time": sequential_time,
         "sequential_results": sequential_results,
         "comparisons": comparisons,
+    }
+
+
+def benchmark_multiprocessing(
+    zones: Iterable[dict],
+    iterations: int = 100_000,
+    process_counts: Optional[List[int]] = None,
+) -> dict:
+    """Keep the Sprint 5 benchmark API for sequential/process comparisons."""
+    benchmark = benchmark_cpu_analysis(
+        zones,
+        iterations=iterations,
+        process_counts=process_counts,
+        dask_worker_counts=[],
+    )
+    return {
+        "zone_count": benchmark["zone_count"],
+        "iterations": benchmark["iterations"],
+        "sequential_time": benchmark["sequential_time"],
+        "sequential_results": benchmark["sequential_results"],
+        "comparisons": [
+            {
+                "process_count": row["worker_count"],
+                "execution_time": row["execution_time"],
+                "speedup": row["speedup"],
+                "results": row["results"],
+            }
+            for row in benchmark["comparisons"]
+        ],
     }

@@ -16,6 +16,7 @@ from backend.repositories import (
 from backend.services import (
     async_sensor_service,
     benchmark_service,
+    dask_analysis_service,
     multiprocessing_service,
     threaded_sensor_service,
 )
@@ -322,7 +323,7 @@ def render(conn: sqlite3.Connection) -> None:
     ]
     analysis_mode = st.segmented_control(
         "Mode d'analyse",
-        options=["Séquentiel", "Multiprocessing"],
+        options=["Séquentiel", "Multiprocessing", "Dask Distributed"],
         default="Multiprocessing",
         key="sprint5_analysis_mode",
     )
@@ -334,40 +335,60 @@ def render(conn: sqlite3.Connection) -> None:
         step=1000,
         key="sprint5_iterations",
     )
-    process_count = 2
+    worker_count = 2
     if analysis_mode == "Multiprocessing":
-        process_count = st.select_slider(
+        worker_count = st.select_slider(
             "Nombre de processus",
             options=[1, 2, 4],
             value=2,
             key="sprint5_process_count",
         )
+    elif analysis_mode == "Dask Distributed":
+        worker_count = st.select_slider(
+            "Nombre de workers Dask",
+            options=[1, 2, 4],
+            value=2,
+            key="sprint6_dask_workers",
+        )
 
     if st.button("Exécuter l'analyse CPU", key="sprint5_run_analysis"):
         started = time.perf_counter()
-        if analysis_mode == "Séquentiel":
-            analysis_results = multiprocessing_service.analyze_zones_sequential(
-                zone_workloads,
-                iterations=iterations,
-            )
-        else:
-            analysis_results = multiprocessing_service.analyze_zones(
-                zone_workloads,
-                iterations=iterations,
-                max_workers=process_count,
-            )
+        with st.spinner(f"Analyse {analysis_mode} des zones..."):
+            if analysis_mode == "Séquentiel":
+                analysis_results = (
+                    multiprocessing_service.analyze_zones_sequential(
+                        zone_workloads,
+                        iterations=iterations,
+                    )
+                )
+            elif analysis_mode == "Multiprocessing":
+                analysis_results = multiprocessing_service.analyze_zones(
+                    zone_workloads,
+                    iterations=iterations,
+                    max_workers=worker_count,
+                )
+            else:
+                analysis_results = dask_analysis_service.analyze_zones_dask(
+                    zone_workloads,
+                    iterations=iterations,
+                    n_workers=worker_count,
+                )
         st.session_state["sprint5_analysis_result"] = {
             "mode": analysis_mode,
-            "process_count": process_count,
+            "worker_count": worker_count,
             "execution_time": time.perf_counter() - started,
             "results": analysis_results,
         }
 
     analysis_result = st.session_state.get("sprint5_analysis_result")
     if analysis_result:
+        result_worker_count = analysis_result.get(
+            "worker_count",
+            analysis_result.get("process_count", 0),
+        )
         process_details = (
-            f" ({analysis_result['process_count']} processus)"
-            if analysis_result["mode"] == "Multiprocessing"
+            f" ({result_worker_count} workers)"
+            if analysis_result["mode"] != "Séquentiel"
             else ""
         )
         st.caption(
@@ -379,24 +400,29 @@ def render(conn: sqlite3.Connection) -> None:
             hide_index=True,
         )
 
-    if st.button("Comparer séquentiel et multiprocessing", key="sprint5_benchmark"):
+    if st.button(
+        "Comparer séquentiel, multiprocessing et Dask",
+        key="sprint6_benchmark",
+    ):
         with st.spinner("Benchmark CPU en cours..."):
-            benchmark = benchmark_service.benchmark_multiprocessing(
+            benchmark = benchmark_service.benchmark_cpu_analysis(
                 zone_workloads,
                 iterations=iterations,
                 process_counts=[1, 2, 4],
+                dask_worker_counts=[1, 2, 4],
             )
-        st.session_state["sprint5_benchmark_result"] = benchmark
+        st.session_state["sprint6_benchmark_result"] = benchmark
 
-    benchmark = st.session_state.get("sprint5_benchmark_result")
+    benchmark = st.session_state.get("sprint6_benchmark_result")
     if benchmark:
         st.dataframe(
             pd.DataFrame(
                 [
                     {
-                        "Processus": row["process_count"],
+                        "Stratégie": row["strategy"],
+                        "Workers / processus": row["worker_count"],
                         "Séquentiel (s)": benchmark["sequential_time"],
-                        "Multiprocessing (s)": row["execution_time"],
+                        "Durée (s)": row["execution_time"],
                         "Speedup": row["speedup"],
                     }
                     for row in benchmark["comparisons"]
@@ -405,6 +431,6 @@ def render(conn: sqlite3.Connection) -> None:
             hide_index=True,
         )
         st.caption(
-            "Le démarrage des processus et le transfert des données ont un coût; "
-            "le multiprocessing n'est donc pas toujours plus rapide."
+            "Le démarrage des processus, la communication et la planification "
+            "Dask ont un coût; le calcul distribué n'est pas toujours plus rapide."
         )

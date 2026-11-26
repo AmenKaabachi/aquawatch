@@ -626,3 +626,21 @@ Lancez `streamlit run app.py`, ouvrez **Collecte asynchrone**, puis choisissez
 mesure le séquentiel et les trois tailles de pool. Pour exécuter les tests Sprint
 5 : `python -m pytest -q tests/test_sprint5_multiprocessing.py`; la suite
 complète se lance avec `python -m pytest -q`.
+
+## 14. Sprint 6 — Dask Distributed
+
+Dask Distributed planifie les analyses indépendantes de chaque zone sur un
+cluster local, avec un processus par worker. Le service réutilise le calcul
+déterministe de Sprint 5; les workers exécutent leurs tâches sur la même
+machine, et non sur plusieurs ordinateurs. Le client et le cluster sont fermés
+après chaque analyse.
+
+Dans **Collecte asynchrone**, sélectionnez **Dask Distributed**, choisissez le
+nombre de workers et lancez l'analyse. Le benchmark compare les résultats
+séquentiels, multiprocessing et Dask pour plusieurs tailles de pool. Le
+démarrage du cluster et la planification ont un coût, donc Dask n'est pas
+toujours plus rapide pour les petites charges.
+
+Installez les dépendances avec `python -m pip install -r requirements.txt`.
+Lancez les tests Sprint 6 avec
+`python -m pytest -q tests/test_sprint6_dask.py`.
