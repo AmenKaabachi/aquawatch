@@ -520,13 +520,93 @@ Commande Python de démonstration avec les capteurs actifs :
 python -c "from backend.database.connection import get_connection; from backend.repositories import sensor_repository; from backend.services.benchmark_service import run_benchmark; c=get_connection(); s=sensor_repository.get_active(c); print(run_benchmark([{'sensors':s[:n]} for n in (4,8,16,24)], 0.05, 3, 42)); c.close()"
 ```
 
-Dans le tableau de bord, la page **⚡ Collecte asynchrone** permet de choisir le nombre
-de capteurs, la latence simulée et le nombre de répétitions. Les collectes séquentielle
-et asynchrone peuvent être exécutées séparément, mais seule la collecte applicative
-explicitement lancée depuis ce mode persiste les mesures.
+Dans le tableau de bord, la page de collecte permet de choisir le nombre de capteurs,
+la latence simulée et le nombre de répétitions. Le benchmark ne persiste pas les mesures.
 
 **Concurrence** : plusieurs tâches progressent pendant des périodes qui se chevauchent.
 **Asynchronisme** : `asyncio` suspend les tâches pendant l'attente simulée et réactive
 d'autres tâches sur la boucle d'événements. **Parallélisme** : plusieurs opérations CPU
 s'exécutent simultanément. Sprint 3 démontre la concurrence asynchrone, pas le parallélisme
 CPU ni des communications avec des capteurs réels.
+
+---
+
+## 12. Sprint 4 — Collecte multithread et comparaison des stratégies
+
+Sprint 4 ajoute une collecte bloquante multithread dans
+[`threaded_sensor_service.py`](backend/services/threaded_sensor_service.py).
+Le tableau de bord compare désormais séquentiel, asyncio et multithreading.
+
+### Architecture et sécurité des données
+
+- Chaque worker exécute une opération de collecte simulée avec `time.sleep()` et
+  génère la mesure avec le simulateur existant. Les identifiants, les types de
+  mesures et les horodatages restent ceux du modèle AquaWatch.
+- `ThreadPoolExecutor` limite le nombre de threads (1 à 32 côté service, jusqu'à
+  8 dans l'interface). Les tâches renvoient les mesures, leur durée, le nom et
+  l'identifiant du thread; les erreurs individuelles sont rapportées avec le
+  capteur concerné.
+- Les workers ne partagent pas la connexion SQLite et ne modifient pas de
+  collections partagées. Le thread appelant rassemble les résultats puis appelle
+  `measurement_repository.insert_many()`, qui conserve la transaction et le
+  traitement de surveillance/alertes existants.
+- Une entrée contenant deux fois le même identifiant de capteur est rejetée pour
+  éviter de créer plusieurs mesures pour ce capteur dans une même collecte.
+
+Un **processus** possède son propre espace mémoire et peut contenir plusieurs
+**threads**, qui partagent la mémoire du processus. Le pool réutilise et borne ces
+threads au lieu de créer un thread non contrôlé par capteur. Pour cette simulation
+d'attente d'entrée-sortie, un worker peut dormir pendant qu'un autre avance.
+
+`asyncio` coordonne des coroutines sur une boucle d'événements et nécessite des
+opérations asynchrones (`async`/`await`). Les threads permettent ici d'exécuter
+plusieurs opérations bloquantes dans un pool. Dans CPython standard, le **GIL**
+(Global Interpreter Lock) limite généralement l'exécution simultanée de bytecode
+Python dans un même interpréteur : le multithreading convient à l'attente
+d'entrée-sortie, mais n'accélère généralement pas un calcul CPU pur. Le
+multiprocessing pourra traiter ce dernier cas dans un sprint ultérieur; il n'est
+pas inclus dans Sprint 4.
+
+### Benchmark et démonstration
+
+Le benchmark passe la même liste de capteurs, le même délai, la même graine et le
+même horodatage aux trois stratégies pour chaque répétition. Il mesure seulement
+la collecte avec `time.perf_counter()`; les écritures SQLite et le rendu du
+tableau de bord sont exclus. Les durées affichées sont les moyennes des
+répétitions. Pour chaque comparaison, le tableau et les graphiques présentent
+durée, speedup, temps économisé, amélioration en pourcentage, résultats réussis
+et échecs. Les tailles de pool sont comparables, et une augmentation du nombre
+de threads n'est pas présumée améliorer le temps.
+
+Exemple de benchmark sans persistance, sur les mêmes 8 capteurs et avec des pools
+de 1, 2 et 4 threads :
+
+```powershell
+python -c "from backend.database.connection import get_connection; from backend.repositories import sensor_repository; from backend.services.benchmark_service import run_benchmark; c=get_connection(); s=sensor_repository.get_active(c)[:8]; print(run_benchmark([{'sensors':s}], 0.05, 3, 42, [1,2,4])); c.close()"
+```
+
+Exemple de résultat réellement mesuré dans l'environnement local (Windows,
+Python 3.13.1), avec 8 capteurs, 20 ms de latence simulée, graine 42 et 3
+répétitions. Les durées sont des moyennes; les 8 mesures ont réussi dans chaque
+stratégie et chaque essai.
+
+| Workers | Séquentiel (s) | Asyncio (s) | Multithreading (s) | Speedup asyncio | Speedup threads |
+|---:|---:|---:|---:|---:|---:|
+| 1 | 0.2481 | 0.0316 | 0.1659 | 7.85x | 1.50x |
+| 2 | 0.2408 | 0.0319 | 0.0842 | 7.54x | 2.86x |
+| 4 | 0.2474 | 0.0320 | 0.0446 | 7.72x | 5.54x |
+| 8 | 0.2462 | 0.0315 | 0.0282 | 7.82x | 8.74x |
+
+Dans cette exécution précise, augmenter le nombre de workers a réduit le temps
+observé pour la collecte simulée bloquante. Ce résultat n'est pas une garantie
+pour d'autres tailles de pool, machines ou charges : les timings locaux varient
+selon l'ordonnanceur et la charge système.
+
+Pour lancer la page intégrée, utilisez `streamlit run app.py`; sélectionnez une
+stratégie et cliquez sur **Exécuter et enregistrer** pour persister les mesures
+dans le pipeline existant. Le bouton **Comparer les stratégies** lance des essais
+sans écriture en base. Les tests Sprint 4 se lancent avec :
+
+```powershell
+python -m pytest -q
+```
